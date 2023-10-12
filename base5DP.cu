@@ -10,9 +10,10 @@
 #include <sys/time.h>
 
 #define ROOT 0
-#define MAXNGPU 3
 #define MAX_THREAD 512
-#define M 200
+#define MAXNGPU 3	//maximum number of GPU that can be used
+#define M 200		// number of starting points per iteration
+#define ITERMAX 200	//maximum number of moot iterations in a row after which the program would stop
 
 #define BASE 5
 #define POWER 13
@@ -25,6 +26,7 @@
 #define TIMER_STOP	gettimeofday(&temp_2, (struct timezone*)0)
 #define TIMER_ELAPSED ((temp_2.tv_sec-temp_1.tv_sec)*1.e6+(temp_2.tv_usec-temp_1 .tv_usec))
 
+//instructions for compiling and running
 //nvcc -I/usr/local/openmpi-4.1.4/include -L/usr/local/openmpi-4.1.4/lib -lmpi base5DP.cu -o baseDP
 // mpirun -np 7 findcoll 500 2
 
@@ -33,6 +35,7 @@ void cudaErrorCheck(cudaError_t error, const char * msg){
    	 fprintf(stderr, "%s:%s\n ", msg, cudaGetErrorString(error));
    	 exit(EXIT_FAILURE);}}
 
+//subfunction to be called inside baseFunct
 __host__ __device__ uint32_t abcFunct(uint32_t ua, uint32_t ub, uint32_t uc){
     	int a=ua;
     	int b=ub;
@@ -41,7 +44,7 @@ __host__ __device__ uint32_t abcFunct(uint32_t ua, uint32_t ub, uint32_t uc){
     	return F;
 }
 
-
+//function that advances steps in the path
 __host__ __device__ uint32_t baseFunct(uint32_t x, int r){
     r=r%(POWER+1);
     	uint32_t *arrayEquivX=(uint32_t*)malloc(sizeof(int)*(POWER+r));
@@ -51,6 +54,7 @@ __host__ __device__ uint32_t baseFunct(uint32_t x, int r){
 
     	remnant=x;
 
+	//padding for the indexes out of bound
     	for (int i=0; i<r; i++) arrayEquivX[POWER+i]=0;
 
     	for (int i=0; i<POWER; i++){
@@ -74,13 +78,12 @@ __host__ __device__ uint32_t baseFunct(uint32_t x, int r){
 }
 
 
-
-//findPathAndDP<<<nblocks, nthreads>>>(d_x0p, d_x,lg, n_per_proc, d_DjX0, d_DjD, d_Djsteps, d_DjC, d_nDPaux);
+//computes path on the GPU
 __global__ void findPathAndDP(
    	 uint32_t* d_x0p,
    	 uint32_t* d_x,
-    int lg,
-    int r,
+	int lg,
+    	int r,
    	 int n_per_proc,
    	 uint32_t* d_DjX0,
    	 uint32_t* d_DjD,
@@ -124,7 +127,7 @@ __global__ void findPathAndDP(
 
 
 
-
+//subRoutine to find collisions that happen inside (rather than on last step) of the path
 void FindIntermediateColl (int r, uint32_t DjX0i, uint32_t Djstepsi,
    		 uint32_t DjX0k, uint32_t Djstepsk, uint32_t* newDjC, uint32_t* newDjD){
 
@@ -201,15 +204,12 @@ if(lg <=0){
    	 fprintf(stderr,"[ERROR] - lg must be > 0\n");
    	 return EXIT_FAILURE;}
 
+//index to use inside "stepping" function
 int r=atoi(argv[2]);
 
  if(r <0){
    	 fprintf(stderr,"[ERROR] - r must be > 0\n");
    	 return EXIT_FAILURE;}
-
- /*if(max>(PRIME/DP)*(PRIME/DP-1)/2){
-    	fprintf(stderr,"[ERROR] - required collisions too high for this method\n");
-    	return EXIT_FAILURE;}*/
 
 uint32_t PRIME= pow(BASE, POWER);
 
@@ -232,6 +232,7 @@ cudaErrorCheck(cudaGetDeviceCount(&usableGPUs),"cudaGetDevice");
 //if (usableGPUs>MAXNGPU) usableGPUs=MAXNGPU;
 //printf("%d GPUs available\n", usableGPUs);
 
+//to make performance more efficient, each GPU can oly be assigned one process
 if(NP>usableGPUs){
     	fprintf(stderr,"[ERROR] - rerun with less than %d processes\n", usableGPUs);
     	return EXIT_FAILURE; }
@@ -258,47 +259,47 @@ for (int i=0; i<M*(M-1)/2 ; i++){
    	 scB[i]=0;}
 
 
-int nCovered=0;
-
-int nIter=0;
-int nMoot=0;
+int nCovered=0;	//number of different starting points used
+int nIter=0;	//number of iterations
+int nMoot=0;	//number of unuseful iterations in a row
 
 while (nCollisFinal < 1){
 
-    //generation and scattering of random starting points
-   	 int nDPj=0;   
-   	 
-   	 uint32_t *x0=(uint32_t*)malloc(sizeof(int)*M);
+	//generation and scattering of unique random starting points
+	int nDPj=0;   
+
+	//needs to be allocated on all processes otherwise we can't use the scatter
+   	uint32_t *x0=(uint32_t*)malloc(sizeof(int)*M);
 
     	if (x0==NULL) {
    		 fprintf(stderr,"[ERROR][RANK %d] Cannot allocate memory\n",rank);
    		 MPI_Abort(MPI_COMM_WORLD,1);}
     
     if (rank == ROOT){
-    //int lim=PRIME-nIter*M;
-    //if (M<lim) lim=M;
-    
     for (int i = 0; i < NP*n_per_proc; i++){
        		 int a=1;
    	 while (a==1){
-   		 x0[i]=rand()%PRIME;
-       			 //printf("indx %d-  %d \n", i, x0[i]);
-       			 int b=0;
-   		 for(int k=0; k<i; k++){
-   		 if (x0[i]==x0[k]){
-   			 b++;
-   			 break;}}
+		//generation
+		x0[i]=rand()%PRIME;
+       		//printf("indx %d-  %d \n", i, x0[i]);
+       		int b=0;
+		//checks that different from all other starting points of this iteration
+   		for(int k=0; k<i; k++){
+   		if (x0[i]==x0[k]){
+   			b++;
+   			break;}}
    		 if (b==0) a=0;
    		 }//WHILE
-   	 int c=0;
-   		 for(int k=0; k<nCovered; k++){
-   		 if (x0[i]==x0glob[k]){
-   			 c++;
-           		 break;}}
-   		 if (c==0){
-   		 x0glob[nCovered]=x0[i];
-   			 nCovered++;}
-    }
+   	int c=0;
+	//checks if starting has not been used in previous iterations and adds to global count
+   	for(int k=0; k<nCovered; k++){
+   	if (x0[i]==x0glob[k]){
+   		c++;
+           	break;}}
+   	if (c==0){
+   		x0glob[nCovered]=x0[i];
+   		nCovered++;}
+    	}//FOR
     }//ROOT
 
    	 uint32_t *x0p=(uint32_t*)malloc(sizeof(int)*n_per_proc);
@@ -307,66 +308,57 @@ while (nCollisFinal < 1){
    	 fprintf(stderr,"[ERROR] - Cannot allocate memory\n");
    	 return EXIT_FAILURE; }
 
-   	 //printf("abt to scatter %d \n", n_per_proc);
-   	 MPI_Bcast(&nCovered,1, MPI_INT,ROOT,MPI_COMM_WORLD);
-    MPI_Scatter(x0, n_per_proc, MPI_INT, x0p, n_per_proc, MPI_INT, ROOT, MPI_COMM_WORLD);
-   	 MPI_Barrier(MPI_COMM_WORLD);
+   	MPI_Bcast(&nCovered,1, MPI_INT,ROOT,MPI_COMM_WORLD);
+	MPI_Scatter(x0, n_per_proc, MPI_INT, x0p, n_per_proc, MPI_INT, ROOT, MPI_COMM_WORLD);
+   	MPI_Barrier(MPI_COMM_WORLD);
     
-    free(x0);
+    	free(x0);
 
-    if(rank==ROOT) printf("scatter success %d \n", M);
+    	if(rank==ROOT) printf("scatter success %d \n", M);
    	 
-    //allocation and initialization of device arrays
-   	 uint32_t *d_x0p;
-   	 cudaErrorCheck(cudaMalloc(&d_x0p,sizeof(int)*n_per_proc),"cudaMalloc d_x0p");
-    cudaErrorCheck(cudaMemcpy(d_x0p,x0p,sizeof(int)*n_per_proc,cudaMemcpyHostToDevice),"Memcpy d_x0p");
+    	//allocation and initialization of device arrays
+   	uint32_t *d_x0p;
+   	cudaErrorCheck(cudaMalloc(&d_x0p,sizeof(int)*n_per_proc),"cudaMalloc d_x0p");
+    	cudaErrorCheck(cudaMemcpy(d_x0p,x0p,sizeof(int)*n_per_proc,cudaMemcpyHostToDevice),"Memcpy d_x0p");
 
-   	 uint32_t *d_x;
-   	 cudaErrorCheck(cudaMalloc(&(d_x), sizeof(int) * lg*n_per_proc),"cudaMalloc d_x");
+   	uint32_t *d_x;
+   	cudaErrorCheck(cudaMalloc(&(d_x), sizeof(int) * lg*n_per_proc),"cudaMalloc d_x");
 
-   	 uint32_t *d_DjX0;
-   	 uint32_t *d_DjD;
-   	 uint32_t *d_Djsteps;
-   	 uint32_t *d_DjC;
-   	 int *d_nDPaux;
+   	uint32_t *d_DjX0;
+   	uint32_t *d_DjD;
+   	uint32_t *d_Djsteps;
+   	uint32_t *d_DjC;
+   	int *d_nDPaux;
 
-   	 cudaErrorCheck(cudaMalloc(&(d_DjX0), sizeof(int) *n_per_proc),"cudaMalloc d_DjX0");
-   	 cudaErrorCheck(cudaMalloc(&(d_DjD), sizeof(int)*n_per_proc),"cudaMalloc d_DjD");
-   	 cudaErrorCheck(cudaMalloc(&(d_Djsteps), sizeof(int) *n_per_proc),"cudaMalloc d_Djsteps");
-   	 cudaErrorCheck(cudaMalloc(&(d_DjC), sizeof(int) *n_per_proc),"cudaMalloc d_DjC");
-   	 cudaErrorCheck(cudaMalloc(&(d_nDPaux), sizeof(int)*n_per_proc),"cudaMalloc d_nDPaux");
+   	cudaErrorCheck(cudaMalloc(&(d_DjX0), sizeof(int) *n_per_proc),"cudaMalloc d_DjX0");
+   	cudaErrorCheck(cudaMalloc(&(d_DjD), sizeof(int)*n_per_proc),"cudaMalloc d_DjD");
+   	cudaErrorCheck(cudaMalloc(&(d_Djsteps), sizeof(int) *n_per_proc),"cudaMalloc d_Djsteps");
+   	cudaErrorCheck(cudaMalloc(&(d_DjC), sizeof(int) *n_per_proc),"cudaMalloc d_DjC");
+   	cudaErrorCheck(cudaMalloc(&(d_nDPaux), sizeof(int)*n_per_proc),"cudaMalloc d_nDPaux");
 
-    uint32_t *DjX0=(uint32_t*)malloc(sizeof(int)*n_per_proc);
-   	 uint32_t *DjD=(uint32_t*)malloc(sizeof(int)*n_per_proc);
-   	 uint32_t *Djsteps=(uint32_t*)malloc(sizeof(int)*n_per_proc);
-   	 uint32_t *DjC=(uint32_t*)malloc(sizeof(int)*n_per_proc);
-   	 int *nDPaux=(int*)malloc(sizeof(int)*n_per_proc);
-   		 
-    
-    /*for (int i=0; i<n_per_proc; i++){
-    	DjX0[i]=0;
-    	DjD[i]=0;
-    	Djsteps[i]=0;
-    	DjC[i]=0;
-    nDPaux[i]=0;}*/
+    	uint32_t *DjX0=(uint32_t*)malloc(sizeof(int)*n_per_proc);
+   	uint32_t *DjD=(uint32_t*)malloc(sizeof(int)*n_per_proc);
+   	uint32_t *Djsteps=(uint32_t*)malloc(sizeof(int)*n_per_proc);
+   	uint32_t *DjC=(uint32_t*)malloc(sizeof(int)*n_per_proc);
+   	int *nDPaux=(int*)malloc(sizeof(int)*n_per_proc);
 
-    //invocation of CUDA function
-    int nthreads=MAX_THREAD;
-   	 int nblocks=  n_per_proc/MAX_THREAD+1 ;
+    	//invocation of CUDA function
+    	int nthreads=MAX_THREAD;
+   	int nblocks=  n_per_proc/MAX_THREAD+1 ;
    	 
-   	 findPathAndDP<<<nblocks, nthreads>>>(d_x0p, d_x,lg, r, n_per_proc, d_DjX0, d_DjD, d_Djsteps, d_DjC, d_nDPaux);
+   	findPathAndDP<<<nblocks, nthreads>>>(d_x0p, d_x,lg, r, n_per_proc, d_DjX0, d_DjD, d_Djsteps, d_DjC, d_nDPaux);
                         		              	 
 
-    //copies from device to host
-   	 cudaErrorCheck(cudaMemcpy(DjX0, d_DjX0,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
-   	 cudaErrorCheck(cudaMemcpy(DjD, d_DjD,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
-   	 cudaErrorCheck(cudaMemcpy(Djsteps, d_Djsteps,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
-   	 cudaErrorCheck(cudaMemcpy(DjC, d_DjC,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
-   	 cudaErrorCheck(cudaMemcpy(nDPaux, d_nDPaux,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
+    	//copies from device to host
+   	cudaErrorCheck(cudaMemcpy(DjX0, d_DjX0,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
+   	cudaErrorCheck(cudaMemcpy(DjD, d_DjD,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
+   	cudaErrorCheck(cudaMemcpy(Djsteps, d_Djsteps,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
+   	cudaErrorCheck(cudaMemcpy(DjC, d_DjC,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
+   	cudaErrorCheck(cudaMemcpy(nDPaux, d_nDPaux,sizeof(int)*n_per_proc, cudaMemcpyDeviceToHost), "Memcpy");
 
-    //frees on device
-    cudaFree(d_x0p);
-    cudaFree(d_x);
+    	//frees on device
+    	cudaFree(d_x0p);
+    	cudaFree(d_x);
     	cudaFree(d_x0p);
     	cudaFree(d_DjX0);
     	cudaFree(d_DjD);
@@ -374,64 +366,70 @@ while (nCollisFinal < 1){
     	cudaFree(d_DjC);
     	cudaFree(d_nDPaux);
 
-    //frees on host
-    free(x0p);
+    	//frees on host
+    	free(x0p);
 
-    //calculates tot number of DP per process
-   	 for (int i=0; i<n_per_proc; i++) nDPj+=nDPaux[i];
+    	//calculates tot number of DP per process
+   	for (int i=0; i<n_per_proc; i++) nDPj+=nDPaux[i];
     	printf("rank %d - tot DPs found in iteration %d \n", rank, nDPj);
     
-    //flags processes that didn't find any DP
-    int flag=0;
-    if(nDPj==0 && rank!=ROOT) flag=1;
+    	//flags processes that didn't find any DP
+    	int flag=0;
+    	if(nDPj==0 && rank!=ROOT) flag=1;
     
-    //finds collisins (per process)
-    int nCollisj=0;
-   	 uint32_t *CjA=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
-   	 uint32_t *CjB=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
+    	//finds collisions (per process)
+    	int nCollisj=0;
+   	uint32_t *CjA=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
+   	uint32_t *CjB=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
 
-   	 int ncjaux=0;
-   	 for (int i = 0; i < n_per_proc; i++){
-   	 for (int k = i+1; k<n_per_proc; k++){
-   	 if(DjD[i]==DjD[k]){
-   	 if (DjC[i]==DjC[k]){
-   		 uint32_t *newDjC=(uint32_t*)malloc(sizeof(int)*2);
-   		 uint32_t *newDjD=(uint32_t*)malloc(sizeof(int)*2);
-   		 
-   		 newDjC[0]=DjC[i];
-   		 newDjC[1]=DjC[k];
-   		 newDjD[0]=DjD[i];
-   		 newDjD[1]=DjD[k];
-   		 
-   		 FindIntermediateColl (r, DjX0[i], Djsteps[i],
-                   			 DjX0[k], Djsteps[k], newDjC, newDjD);
-   		 
-   		 DjC[i]=newDjC[0];
-   		 DjC[k]=newDjC[1];
-   		 DjD[i]=newDjD[0];
-   		 DjD[k]=newDjD[1];
-   		 
-   		 free(newDjC);
-   		 free(newDjD);
-   	 }
-   	 
+   	int ncjaux=0;
+   	for (int i = 0; i < n_per_proc; i++){
+   	for (int k = i+1; k<n_per_proc; k++){
+   	if(DjD[i]==DjD[k]){	//if 2 paths converge on the same DP
+   		if (DjC[i]==DjC[k]){	//if the collision is not immedate (ie - occuring on the last step) we need to call the relevant function to find it inside the path
 
-   	 if (DjC[i]!=DjC[k]){
-       			 printf("rank %d collision between %d and %d on %d on indx %d \n", rank, DjC[i], DjC[k], DjD[i], i);
-       			 if (DjC[i]<DjC[k]){
-               			 CjA[ncjaux]=DjC[i];
-               			 CjB[ncjaux]=DjC[k];}
-       			 else{
-               			 CjA[ncjaux]=DjC[k];
-               			 CjB[ncjaux]=DjC[i];}
-       			 ncjaux++;
-       			 }
-       	}
-   	 }}
+			//setup of the Array and Values to pass to the subFunction
+			uint32_t *newDjC=(uint32_t*)malloc(sizeof(int)*2);
+   			uint32_t *newDjD=(uint32_t*)malloc(sizeof(int)*2);
+   		 
+	   		newDjC[0]=DjC[i];
+	   		newDjC[1]=DjC[k];
+	   		newDjD[0]=DjD[i];
+	   		newDjD[1]=DjD[k];
+	   		 
+	   		FindIntermediateColl (r, DjX0[i], Djsteps[i],
+	                   			 DjX0[k], Djsteps[k], newDjC, newDjD);
+	
+			//update "DP"arrays with relevant results from subFunction
+	   		DjC[i]=newDjC[0];
+	   		DjC[k]=newDjC[1];
+	   		DjD[i]=newDjD[0];
+	   		DjD[k]=newDjD[1];
+	
+			//free temporary Array used for subFunction
+	   		free(newDjC);
+	   		free(newDjD);
+   	 	}
+
+   	 if (DjC[i]!=DjC[k]){ //if there is a Collision (ie a!=b| F(a)=F(b) )
+       		printf("rank %d collision between %d and %d on %d on indx %d \n", rank, DjC[i], DjC[k], DjD[i], i);
+
+		//we keep the two elements ordered so that is easier to check for duplicates
+		if (DjC[i]<DjC[k]){
+               		CjA[ncjaux]=DjC[i];
+               		CjB[ncjaux]=DjC[k];}
+       		else{
+               		CjA[ncjaux]=DjC[k];
+               		CjB[ncjaux]=DjC[i];}
+       			ncjaux++;
+       			}
+       		}
+   	 }} //for i for k 
 
    	 if ( ncjaux!=0) printf("rank %d - no of collisions %d \n" , rank, ncjaux);    
 
-	 //eliminates duplicates (per process)
+	//eliminates duplicates (per process)
+	//allocates new Array to hold only unique values
    	 uint32_t *scjA=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
    	 uint32_t *scjB=(uint32_t*)malloc(sizeof(int)*n_per_proc*(n_per_proc-1)/2);
    	 for (int i=0; i<n_per_proc*(n_per_proc-1)/2 ; i++){
@@ -468,9 +466,9 @@ while (nCollisFinal < 1){
     
     if (rank==ROOT) printf("reduce success %d \n", nCollisT);
 
-
+    //initialization and allocation of "gathering" Arrays
     uint32_t *CA=(uint32_t*)malloc(sizeof(int)*M*(n_per_proc-1)/2);
-    	uint32_t *CB =(uint32_t*)malloc(sizeof(int)*M*(n_per_proc-1)/2);
+    uint32_t *CB =(uint32_t*)malloc(sizeof(int)*M*(n_per_proc-1)/2);
 
     if (CA==NULL) {
     	fprintf(stderr,"[ERROR][RANK %d] Cannot allocate memory\n",rank);
@@ -484,35 +482,39 @@ while (nCollisFinal < 1){
     MPI_Gather(scjB, n_per_proc*(n_per_proc-1)/2, MPI_INT, CB, n_per_proc*(n_per_proc-1)/2, MPI_INT, ROOT, MPI_COMM_WORLD);
 
     //each process shares with root the number of DPs found
-
     int nDP=0;
-    uint32_t *DX0=(uint32_t*)malloc(sizeof(int)*M);
-    	uint32_t *DD =(uint32_t*)malloc(sizeof(int)*M);
-    	uint32_t *Dsteps =(uint32_t*)malloc(sizeof(int)*M);
-    uint32_t *DC =(uint32_t*)malloc(sizeof(int)*M);
-    
-    for (int i=0; i<M ; i++){
-    	DX0[i]=0;
-    	DD[i]=0;
-    Dsteps[i]=0;
-    DC[i]=0;}
-    
     MPI_Reduce(&nDPj, &nDP, 1, MPI_INT, MPI_SUM, ROOT, MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
 
+    //each prcess that found DPs>0 shares with root the related information
+
+    //initialization and allocation of "gathering" Arrays    
+    uint32_t *DX0=(uint32_t*)malloc(sizeof(int)*M);
+    uint32_t *DD =(uint32_t*)malloc(sizeof(int)*M);
+    uint32_t *Dsteps =(uint32_t*)malloc(sizeof(int)*M);
+    uint32_t *DC =(uint32_t*)malloc(sizeof(int)*M);
+
+	
+    for (int i=0; i<M ; i++){
+    	DX0[i]=0;
+    	DD[i]=0;
+    	Dsteps[i]=0;
+    	DC[i]=0;}
+
+    //Split the global communicator
     int key;    
     if (flag==0) key= rank;
     else key=NP-rank;
+    MPI_Comm new_comm;
+    MPI_Comm_split(MPI_COMM_WORLD, flag, key, &new_comm);
 
-    // Split the global communicator
-   	 MPI_Comm new_comm;
-   	 MPI_Comm_split(MPI_COMM_WORLD, flag, key, &new_comm);
-
-    //each prcess that found DPs>0 shares with root the realted information
+    //only processes belonging to new communicator (ie that found DPs) share with root the related information
     MPI_Gather(DjX0, n_per_proc, MPI_INT, DX0, n_per_proc, MPI_INT, ROOT, new_comm);
     MPI_Gather(DjD, n_per_proc, MPI_INT, DD, n_per_proc, MPI_INT, ROOT, new_comm);
     MPI_Gather(Djsteps, n_per_proc, MPI_INT, Dsteps, n_per_proc, MPI_INT, ROOT, new_comm);
     MPI_Gather(DjC, n_per_proc, MPI_INT, DC , n_per_proc, MPI_INT, ROOT, new_comm);
+
+    //frees new communicator
     MPI_Comm_free(&new_comm);
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -525,116 +527,111 @@ while (nCollisFinal < 1){
    	 free(scjA);
    	 free(scjB);
 
-    
-    int nCollisTot=0;
-
     //eliminates duplicates (globally)
+    int nCollisTot=0;
     if(rank==ROOT){
-    printf("Cumulative Collis till now %d \n", nCollisFinal);
+    	printf("Cumulative Collis till now %d \n", nCollisFinal);
 
-   	 if (nCollisT>0){
-
-       		 for (int i = 0; i < M*(n_per_proc-1)/2; i++){
-       		 int a=0;
-       		 int b=0;
-       		 
-   	 if (CB[i]!=0){
-           		 for (int k = 0; k<i; k++){
-               		 if(CA[i]==CA[k] && CB[i]==CB[k]){
-                       		 a++;
-                       		 break;}}
-               		 //printf( "a= %d on indx %d \n", a, i);
-   		 if (a==0){
-                       		 for (int h = 0;h<nCollisFinal+1;h++){
-                       		 if(CA[i]==scA[h] && CB[i]==scB[h]){
-                               		 b++;
-                               		 break;}}
-                       		 if (b==0){
-                               		 scA[nCollisFinal+nCollisTot]=CA[i];
-                               		 scB[nCollisFinal+nCollisTot]=CB[i];
-                               		 printf("new Collis bw %d and %d on indx %d \n", scA[nCollisFinal+nCollisTot],
-   				 scB[nCollisFinal+nCollisTot], i);
-                               		 nCollisTot++;}
-   		 }  	 
-       		 }}
-       		 printf("nSingleRank of this iteration %d \n", nCollisTot);
+   	if (nCollisT>0){
+       		for (int i = 0; i < M*(n_per_proc-1)/2; i++){
+       			int a=0;
+       		 	int b=0; 
+	   	 	if (CB[i]!=0){
+	           		 for (int k = 0; k<i; k++){
+	               		 if(CA[i]==CA[k] && CB[i]==CB[k]){	//checks that unique inside iteration
+	                       		a++;
+	                       		break;}}
+	               		//printf( "a= %d on indx %d \n", a, i);
+	   		 	if (a==0){	//checks that unique compared to previous iterations
+	                       		for (int h = 0;h<nCollisFinal+1;h++){
+	                       		if(CA[i]==scA[h] && CB[i]==scB[h]){
+	                               		b++;
+	                               		break;}}
+	                       		 if (b==0){	//if unique adds to global-all-iterations array
+	                               		scA[nCollisFinal+nCollisTot]=CA[i];
+	                               		scB[nCollisFinal+nCollisTot]=CB[i];
+	                               		printf("new Collis bw %d and %d on indx %d \n", scA[nCollisFinal+nCollisTot], scB[nCollisFinal+nCollisTot], i);
+	                               		nCollisTot++;}
+	   		 		}//if a==0  	 
+       		 	} //if CB!=0
+		} //for i
+       		printf("nSingleRank of this iteration %d \n", nCollisTot);
    	 }
     
     //looks for new "interrank" collsions
     int nCollisIr=0;
     int nCollisIrT=0;
     uint32_t *tempA=(uint32_t*)malloc(sizeof(int)*M*n_per_proc*(NP-1)/2);
-    	uint32_t *tempB =(uint32_t*)malloc(sizeof(int)*M*n_per_proc*(NP-1)/2);
+    uint32_t *tempB =(uint32_t*)malloc(sizeof(int)*M*n_per_proc*(NP-1)/2);
 
     for (int i = 0; i <M; i++){
     if (DC[i]==0 && DD[i]!=1) break;
     for (int k =n_per_proc+i/(n_per_proc); k<M; k++){
-   		 int a=1;
-   		 int b=1;
+   	int a=1;
+   	int b=1;
    	 
-   	 if(DC[k]==0 && DD[k]!=1) break;
-   	 if(DD[i]==DD[k]){
-       			 a=0;
-   		 b=0;}
+   	if(DC[k]==0 && DD[k]!=1) break;
+   	if(DD[i]==DD[k]){
+       		a=0;
+   		b=0;}
+   	if (a==0){
+   		if (DC[i]==DC[k]){ //find Intermediate collision routine and setup
+                   	uint32_t *newDjC=(uint32_t*)malloc(sizeof(int)*2);
+                   	uint32_t *newDjD=(uint32_t*)malloc(sizeof(int)*2);
 
-   	 if (a==0){
-   		 if (DC[i]==DC[k]){
-                   		 uint32_t *newDjC=(uint32_t*)malloc(sizeof(int)*2);
-                   		 uint32_t *newDjD=(uint32_t*)malloc(sizeof(int)*2);
+                   	newDjC[0]=DC[i];
+                   	newDjC[1]=DC[k];
+                   	newDjD[0]=DD[i];
+                   	newDjD[1]=DD[k];
 
-                   		 newDjC[0]=DC[i];
-                   		 newDjC[1]=DC[k];
-                   		 newDjD[0]=DD[i];
-                   		 newDjD[1]=DD[k];
-
-                   		 FindIntermediateColl (r, DX0[i], Dsteps[i],
+                   	FindIntermediateColl (r, DX0[i], Dsteps[i],
                                     	DX0[k], Dsteps[k], newDjC, newDjD);
 
-                   		 DC[i]=newDjC[0];
-                   		 DC[k]=newDjC[1];
-                   		 DD[i]=newDjD[0];
-                   		 DD[k]=newDjD[1];
+                   	DC[i]=newDjC[0];
+                   	DC[k]=newDjC[1];
+                   	DD[i]=newDjD[0];
+                   	DD[k]=newDjD[1];
 
-                   		 free(newDjC);
-                   		 free(newDjD);
-   			 }
+                   	free(newDjC);
+                   	free(newDjD);
+   			}
    			 
-   		 if (DC[i]!=DC[k]){
-   			 for (int h = 0;h<nCollisFinal+nCollisTot+1;h++){
-                   		 if((DC[i]==scA[h] && DC[k]==scB[h]) || (DC[i]==scB[h] && DC[k]==scA[h])){
+   		 	if (DC[i]!=DC[k]){
+   				for (int h = 0;h<nCollisFinal+nCollisTot+1;h++){
+                   		if((DC[i]==scA[h] && DC[k]==scB[h]) || (DC[i]==scB[h] && DC[k]==scA[h])){
                            		 b++;
                            		 break;}}
-                   		 if (b==0){
-   				 if (DC[i]<DC[k]){
-   					 tempA[nCollisIrT]=DC[i];
-   					 tempB[nCollisIrT]=DC[k];}
-   				 else{
-   					 tempA[nCollisIrT]=DC[k];
-   					 tempB[nCollisIrT]=DC[i];}
-   				 //printf("new interrank %d and %d Collis bw %d and %d on %d \n", i, k, tempA[nCollisIrT], tempB[nCollisIrT], DD[i]);
-   				 nCollisIrT++;
-   			 }
-               		 }
-   	 }
-    }}
+                   		if (b==0){ //if the Collsion is new
+	   				if (DC[i]<DC[k]){
+	   					 tempA[nCollisIrT]=DC[i];
+	   					 tempB[nCollisIrT]=DC[k];}
+	   				 else{
+	   					 tempA[nCollisIrT]=DC[k];
+	   					 tempB[nCollisIrT]=DC[i];}
+	   				 //printf("new interrank %d and %d Collis bw %d and %d on %d \n", i, k, tempA[nCollisIrT], tempB[nCollisIrT], DD[i]);
+   				 	nCollisIrT++;
+				}//if b==0
+   			 } //if DCi!=DCk
+		} // if a==0
+    }} // for i for k
 
     //eliminates duplicates between new collisions
     if (nCollisIrT>0){
-   	 scA[nCollisFinal+nCollisTot]=tempA[0];
-            	scB[nCollisFinal+nCollisTot]=tempB[0];
-            	printf("first interrank collis bw %d and %d \n", scA[nCollisFinal+nCollisTot], scB[nCollisFinal+nCollisTot]);
+   	scA[nCollisFinal+nCollisTot]=tempA[0];
+        scB[nCollisFinal+nCollisTot]=tempB[0];
+        printf("first interrank collis bw %d and %d \n", scA[nCollisFinal+nCollisTot], scB[nCollisFinal+nCollisTot]);
 
-            	for (int i = 1; i < nCollisIrT; i++){
-            	int a=0;
-                    	for (int k = 0; k<i; k++){
-                    	if(tempA[i]==tempA[k] && tempB[i]==tempB[k]){
-                            	a++;
-                            	break;}}
-                    	if (a==0){
-                            	scA[nCollisFinal+nCollisTot+nCollisIr]=tempA[i];
-                            	scB[nCollisFinal+nCollisTot+nCollisIr]=tempB[i];
-                            	printf("interrank collis bw %d and %d \n", scA[nCollisFinal+nCollisTot+nCollisIr], scB[nCollisFinal+nCollisTot+nCollisIr]);
-                            	nCollisIr++;}
+        for (int i = 1; i < nCollisIrT; i++){
+        	int a=0;
+                for (int k = 0; k<i; k++){
+                if(tempA[i]==tempA[k] && tempB[i]==tempB[k]){
+                        a++;
+                        break;}}
+                if (a==0){
+                        scA[nCollisFinal+nCollisTot+nCollisIr]=tempA[i];
+                        scB[nCollisFinal+nCollisTot+nCollisIr]=tempB[i];
+                        printf("interrank collis bw %d and %d \n", scA[nCollisFinal+nCollisTot+nCollisIr], scB[nCollisFinal+nCollisTot+nCollisIr]);
+                        nCollisIr++;}
             	}
     }
 
@@ -643,34 +640,35 @@ while (nCollisFinal < 1){
     free(tempB);
 
     nCollisTot=nCollisTot+nCollisIr;
-    	printf("nTot of this iteration %d \n", nCollisTot);
-
+    printf("nTot of this iteration %d \n", nCollisTot);
     } //ROOT
 
     MPI_Barrier(MPI_COMM_WORLD);
     
     //each process is updated on the number of collisions found in this iteration
-    	MPI_Bcast(&nCollisTot,1, MPI_INT,ROOT,MPI_COMM_WORLD);
+    MPI_Bcast(&nCollisTot,1, MPI_INT,ROOT,MPI_COMM_WORLD);
     
     free(DX0);
-    	free(DD);
-    	free(Dsteps);
-    	free(DC);
+    free(DD);
+    free(Dsteps);
+    free(DC);
     
     free(CA);
-   	 free(CB);
-    
+    free(CB);
+
+    //counts number of iterations in a row that didn't give any result
     if (nCollisTot==0) nMoot++;
     else nMoot=0;
 
-    if (nMoot>=200){
-   	 MPI_Bcast(&nMoot,1, MPI_INT,ROOT,MPI_COMM_WORLD);
-   		 MPI_Barrier(MPI_COMM_WORLD);
-   	 if (rank ==ROOT) printf("no new Collision have been found for %d iterations, the required number of Collisions migth be too high \n", nMoot);
-   	 break;}
+    //stops the program after a certain number of moot iterations 
+    if (nMoot>=ITERMAX){
+   	MPI_Bcast(&nMoot,1, MPI_INT,ROOT,MPI_COMM_WORLD);
+   	MPI_Barrier(MPI_COMM_WORLD);
+   	if (rank ==ROOT) printf("no new Collision have been found for %d iterations, the required number of Collisions migth be too high \n", nMoot);
+   	break;}
     
     nCollisFinal= nCollisFinal+nCollisTot;
-   	 MPI_Bcast(&nCollisFinal,1, MPI_INT,ROOT,MPI_COMM_WORLD);
+    MPI_Bcast(&nCollisFinal,1, MPI_INT,ROOT,MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
     if (rank==ROOT) printf("nFin %d \n", nCollisFinal);
     nIter++;
@@ -695,16 +693,12 @@ if (rank==ROOT) {
 MPI_Barrier(MPI_COMM_WORLD);
 TIMER_STOP;
 
-//save in csv subroutine
 if (rank==ROOT) {
-    
-    //uint32_t trial =baseFunct(594,2);
-    //printf("trial %d \n", trial);
-    
     printf("in %d iterations %d points in the set have been searched \n", nIter, nCovered);
     printf("running time: %f microseconds\n",TIMER_ELAPSED);
-    printf("Do you want to save the ouput in a csv? (0=no/1=yes) \n");
 
+    //save in csv subroutine
+    printf("Do you want to save the ouput in a csv? (0=no/1=yes) \n");
 
     int answ;
     scanf("%d", &answ);
