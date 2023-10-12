@@ -21,9 +21,9 @@
 #define DP 21
 
 
-#define TIMER_DEF 	struct timeval temp_1, temp_2
-#define TIMER_START   gettimeofday(&temp_1, (struct timezone*)0)
-#define TIMER_STOP	gettimeofday(&temp_2, (struct timezone*)0)
+#define TIMER_DEF struct timeval temp_1, temp_2
+#define TIMER_START gettimeofday(&temp_1, (struct timezone*)0)
+#define TIMER_STOP gettimeofday(&temp_2, (struct timezone*)0)
 #define TIMER_ELAPSED ((temp_2.tv_sec-temp_1.tv_sec)*1.e6+(temp_2.tv_usec-temp_1 .tv_usec))
 
 //instructions for compiling and running
@@ -46,7 +46,7 @@ __host__ __device__ uint32_t abcFunct(uint32_t ua, uint32_t ub, uint32_t uc){
 
 //function that advances steps in the path
 __host__ __device__ uint32_t baseFunct(uint32_t x, int r){
-    r=r%(POWER+1);
+    	r=r%(POWER+1);
     	uint32_t *arrayEquivX=(uint32_t*)malloc(sizeof(int)*(POWER+r));
     	uint32_t exp= pow(BASE, POWER);
     	uint32_t remnant;
@@ -80,48 +80,51 @@ __host__ __device__ uint32_t baseFunct(uint32_t x, int r){
 
 //computes path on the GPU
 __global__ void findPathAndDP(
-   	 uint32_t* d_x0p,
-   	 uint32_t* d_x,
+   	uint32_t* d_x0p,
+   	uint32_t* d_x,
 	int lg,
     	int r,
-   	 int n_per_proc,
-   	 uint32_t* d_DjX0,
-   	 uint32_t* d_DjD,
-   	 uint32_t* d_Djsteps,
-   	 uint32_t* d_DjC,
-   	 int* d_nDPaux
+   	int n_per_proc,
+   	uint32_t* d_DjX0,
+   	uint32_t* d_DjD,
+   	uint32_t* d_Djsteps,
+   	uint32_t* d_DjC,
+   	int* d_nDPaux
 ) {
 
-   	 int tid = threadIdx.x + blockDim.x * blockIdx.x;
+   int tid = threadIdx.x + blockDim.x * blockIdx.x;
    	 
-    if (tid<n_per_proc) {
-   	 //initialization of arrays
-   		 d_nDPaux[tid]=0;
-   		 d_DjX0[tid]=0;
-   		 d_DjD[tid]=0;
-   		 d_Djsteps[tid]=0;
-   		 d_DjC[tid]=0;
-   	 //places starting points in the right position
-   	 d_x[tid*lg] = d_x0p[tid];
-       		 //printf("starting point %d \n", d_x[tid*lg]);
-       		 __syncthreads();
-   	 //all threads start computing path
-       		 for(int i = 0; i < lg-1; i++) {
-               		 //d_x[tid*lg+i+1] = (d_x[tid*lg+i]*d_x[tid*lg+i]+1) % PRIME;
-   		 d_x[tid*lg+i+1]=baseFunct(d_x[tid*lg+i],r);
-               		 //printf("indx %d path ID %d, %d step %d \n",tid*lg+i, tid, i+1, d_x[tid*lg+i+1]);
-               			 //finds DPs
-   			 if (d_x[tid*lg+i+1] % DP == 0) {
-                       			 d_nDPaux[tid]=1;
-                       			 d_DjX0[tid] = d_x0p[tid];
-                       			 d_DjD[tid] = d_x[tid*lg+i+1];
-                       			 d_Djsteps[tid] = i+1;
-                       			 d_DjC[tid] = d_x[tid*lg+i];
-                       			 //printf("DP found %d in indx %d \n", d_DjD[tid], tid);
-                       			 break;
-               			 }
+   if (tid<n_per_proc) {
+   	//initialization of arrays
+   	d_nDPaux[tid]=0;
+   	d_DjX0[tid]=0;
+   	d_DjD[tid]=0;
+   	d_Djsteps[tid]=0;
+   	d_DjC[tid]=0;
+   	
+	//places starting points in the right position
+   	d_x[tid*lg] = d_x0p[tid];
+       	//printf("starting point %d \n", d_x[tid*lg]);
+       	 __syncthreads();
+   	
+	//all threads start computing path
+       	for(int i = 0; i < lg-1; i++) {
+               	//d_x[tid*lg+i+1] = (d_x[tid*lg+i]*d_x[tid*lg+i]+1) % PRIME;
+   		d_x[tid*lg+i+1]=baseFunct(d_x[tid*lg+i],r);
+               	//printf("indx %d path ID %d, %d step %d \n",tid*lg+i, tid, i+1, d_x[tid*lg+i+1]);
+               	
+		//finds DPs
+   		if (d_x[tid*lg+i+1] % DP == 0) {
+                	d_nDPaux[tid]=1;
+                       	d_DjX0[tid] = d_x0p[tid];
+                       	d_DjD[tid] = d_x[tid*lg+i+1];
+                       	d_Djsteps[tid] = i+1;
+                       	d_DjC[tid] = d_x[tid*lg+i];
+                       	//printf("DP found %d in indx %d \n", d_DjD[tid], tid);
+                       	break;
+               		}
    	 }
-       		 //__syncthreads();       		 
+       	//__syncthreads();       		 
    	 }
 }
 
@@ -131,60 +134,61 @@ __global__ void findPathAndDP(
 void FindIntermediateColl (int r, uint32_t DjX0i, uint32_t Djstepsi,
    		 uint32_t DjX0k, uint32_t Djstepsk, uint32_t* newDjC, uint32_t* newDjD){
 
-                    	//printf("in %d steps from %d and %d steps from %d we reach %d \n", Djsteps[i], DjX0[i], Djsteps[k], DjX0[k], DjD[i]);
-                    	int diff;
-                    	int lim;
+	//printf("in %d steps from %d and %d steps from %d we reach %d \n", Djsteps[i], DjX0[i], Djsteps[k], DjX0[k], DjD[i]);
+        int diff;
+        int lim;
                    	 
-   		 if (Djstepsi<Djstepsk){
-                            	diff=Djstepsk-Djstepsi;
-                            	lim=Djstepsi;
-                            	}
-                    	else{
-                            	diff=Djstepsi-Djstepsk;
-                            	lim=Djstepsk;
-                            	}
+   	if (Djstepsi<Djstepsk){
+                diff=Djstepsk-Djstepsi;
+                lim=Djstepsi;
+                }
+        else{
+                diff=Djstepsi-Djstepsk;
+                lim=Djstepsk;
+                }
    		 
-   		 uint32_t *tempReach= (uint32_t*)malloc(sizeof(int)*(diff+1));
-                    	uint32_t *tempShort= (uint32_t*)malloc(sizeof(int)*lim);
-                    	uint32_t *tempLong=  (uint32_t*)malloc(sizeof(int)*lim);
+   	uint32_t *tempReach= (uint32_t*)malloc(sizeof(int)*(diff+1));
+        uint32_t *tempShort= (uint32_t*)malloc(sizeof(int)*lim);
+        uint32_t *tempLong=  (uint32_t*)malloc(sizeof(int)*lim);
                    	 
-   		 if (Djstepsi<Djstepsk){
-                            	tempShort[0]=DjX0i;
-                            	tempReach[0]=DjX0k;
-                            	}
-                    	else{
-                            	tempShort[0]=DjX0k;
-                            	tempReach[0]=DjX0i;
-                            	}
+   	if (Djstepsi<Djstepsk){
+                tempShort[0]=DjX0i;
+                tempReach[0]=DjX0k;
+                }
+        else{
+                tempShort[0]=DjX0k;
+                tempReach[0]=DjX0i;
+                }
 
-                    	for (int d=0; d<diff; d++) {
-                            	tempReach[d+1]=baseFunct(tempReach[d],r);
-   			 //printf("%d step %d \n", d, tempReach[d]);
-                    	}
+        for (int d=0; d<diff; d++) {
+        tempReach[d+1]=baseFunct(tempReach[d],r);
+   	//printf("%d step %d \n", d, tempReach[d]);
+        }
 
-                    	tempLong[0]=tempReach[diff];
-                    	//printf (" %d step %d \n", diff, tempLong[0]);
+	//checks where the two paths are at the same distance (from the end) to the DP they both converge on
+        tempLong[0]=tempReach[diff];
+        //printf (" %d step %d \n", diff, tempLong[0]);
 
-                    	if (tempShort[0]!=tempLong[0]){
-
-                            	//printf("%d and %d will collide on %d in %d steps \n", tempShort[0], tempLong[0], DjD[i], lim);
-                            	for(int l=0; l<lim-1;l++){
-                                    	tempShort[l+1]=baseFunct(tempShort[l],r);
-                                    	tempLong[l+1] =baseFunct(tempLong[l],r);
-                                    	if (tempShort[l+1]==tempLong[l+1]){
-                                            	newDjC[0]=tempShort[l];
-                                            	newDjC[1]=tempLong[l];
-                                            	newDjD[0]=tempShort[l+1];
-                                            	newDjD[1]=tempLong[l+1];
-                                            	break;
-                                            	}
-                            	}
-                            	printf("intermediate collision between %d and %d on %d \n", newDjC[0], newDjC[1], newDjD[0]);
-                    	}
-            	free(tempReach);
-            	free(tempShort);
-            	free(tempLong);
-            	}
+        if (tempShort[0]!=tempLong[0]){
+        	//printf("%d and %d will collide on %d in %d steps \n", tempShort[0], tempLong[0], DjD[i], lim);
+        	for(int l=0; l<lim-1;l++){
+                        tempShort[l+1]=baseFunct(tempShort[l],r);
+                        tempLong[l+1] =baseFunct(tempLong[l],r);
+                        if (tempShort[l+1]==tempLong[l+1]){
+                                newDjC[0]=tempShort[l];
+                                newDjC[1]=tempLong[l];
+                                newDjD[0]=tempShort[l+1];
+                                newDjD[1]=tempLong[l+1];
+                                break;
+                                }
+                }
+                printf("intermediate collision between %d and %d on %d \n", newDjC[0], newDjC[1], newDjD[0]);
+        }
+        //Free temporary Array
+	free(tempReach);
+        free(tempShort);
+        free(tempLong);
+}
 
 
     
