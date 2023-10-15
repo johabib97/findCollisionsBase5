@@ -28,7 +28,7 @@
 
 //instructions for compiling and running
 //nvcc -I/usr/local/openmpi-4.1.4/include -L/usr/local/openmpi-4.1.4/lib -lmpi base5DP.cu -o baseDP
-// mpirun -np 7 findcoll 500 2
+// mpirun -np 7 baseDP 503 11
 
 void cudaErrorCheck(cudaError_t error, const char * msg){
    	 if ( error != cudaSuccess){
